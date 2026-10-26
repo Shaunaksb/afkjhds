@@ -1,19 +1,54 @@
 import sqlite3
 import os
+import shutil
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
 
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(__file__), "data", "wind_data_jan2026.db")
 
-def get_db_connection(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
-    conn = sqlite3.connect(db_path)
+def get_db_path(db_path: Optional[str] = None) -> str:
+    if db_path is not None:
+        return db_path
+
+    # Check if running in a serverless read-only environment like Vercel or AWS Lambda
+    is_serverless = bool(os.environ.get("VERCEL") or os.environ.get("AWS_LAMBDA_FUNCTION_NAME"))
+    db_dir = os.path.dirname(DEFAULT_DB_PATH)
+    is_writable = os.access(db_dir, os.W_OK) if os.path.exists(db_dir) else False
+
+    if is_serverless or not is_writable:
+        tmp_db = "/tmp/wind_data_jan2026.db"
+        if not os.path.exists(tmp_db):
+            candidate_paths = [
+                DEFAULT_DB_PATH,
+                os.path.join(os.getcwd(), "backend", "data", "wind_data_jan2026.db"),
+                os.path.join(os.getcwd(), "data", "wind_data_jan2026.db"),
+                "/var/task/data/wind_data_jan2026.db",
+                "/var/task/backend/data/wind_data_jan2026.db",
+            ]
+            for candidate in candidate_paths:
+                if os.path.exists(candidate):
+                    try:
+                        shutil.copy2(candidate, tmp_db)
+                        break
+                    except Exception:
+                        pass
+        return tmp_db
+
+    return DEFAULT_DB_PATH
+
+def get_db_connection(db_path: Optional[str] = None) -> sqlite3.Connection:
+    target_path = get_db_path(db_path)
+    os.makedirs(os.path.dirname(target_path), exist_ok=True)
+    conn = sqlite3.connect(target_path)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+    except sqlite3.OperationalError:
+        pass
     return conn
 
-def init_db(db_path: str = DEFAULT_DB_PATH):
+def init_db(db_path: Optional[str] = None):
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
     
@@ -46,7 +81,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH):
     conn.commit()
     conn.close()
 
-def upsert_actuals(records: List[Dict[str, Any]], db_path: str = DEFAULT_DB_PATH):
+def upsert_actuals(records: List[Dict[str, Any]], db_path: Optional[str] = None):
     if not records:
         return
     conn = get_db_connection(db_path)
@@ -60,7 +95,7 @@ def upsert_actuals(records: List[Dict[str, Any]], db_path: str = DEFAULT_DB_PATH
     conn.commit()
     conn.close()
 
-def upsert_forecasts(records: List[Dict[str, Any]], db_path: str = DEFAULT_DB_PATH):
+def upsert_forecasts(records: List[Dict[str, Any]], db_path: Optional[str] = None):
     if not records:
         return
     conn = get_db_connection(db_path)
@@ -74,7 +109,7 @@ def upsert_forecasts(records: List[Dict[str, Any]], db_path: str = DEFAULT_DB_PA
     conn.commit()
     conn.close()
 
-def get_as_of_forecast(target_date: str, cutoff_iso: str, db_path: str = DEFAULT_DB_PATH) -> List[Dict[str, Any]]:
+def get_as_of_forecast(target_date: str, cutoff_iso: str, db_path: Optional[str] = None) -> List[Dict[str, Any]]:
     """
     Fetches the actual generation and the latest forecast available as of cutoff_iso
     for all 48 settlement periods on target_date (YYYY-MM-DD).
@@ -164,7 +199,7 @@ def get_as_of_forecast(target_date: str, cutoff_iso: str, db_path: str = DEFAULT
 
     return aligned_results
 
-def get_available_dates(db_path: str = DEFAULT_DB_PATH) -> List[str]:
+def get_available_dates(db_path: Optional[str] = None) -> List[str]:
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
     cursor.execute("SELECT DISTINCT settlement_date FROM actual_generation ORDER BY settlement_date ASC")
@@ -172,7 +207,7 @@ def get_available_dates(db_path: str = DEFAULT_DB_PATH) -> List[str]:
     conn.close()
     return dates
 
-def get_db_stats(db_path: str = DEFAULT_DB_PATH) -> Dict[str, Any]:
+def get_db_stats(db_path: Optional[str] = None) -> Dict[str, Any]:
     conn = get_db_connection(db_path)
     cursor = conn.cursor()
     cursor.execute("SELECT count(*) FROM actual_generation")
